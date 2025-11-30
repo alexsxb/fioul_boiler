@@ -1,0 +1,71 @@
+{
+  "entity": {
+    "sensor": {
+      "state": {
+        "name": "État de la chaudière"
+      },
+      "power": {
+        "name": "Puissance électrique"
+      },
+      "thermal_kw": {
+        "name": "Puissance thermique"
+      },
+      "flow_lph": {
+        "name": "Débit"
+      },
+      "flow_filtered": {
+        "name": "Débit filtré"
+      },
+      "liters_total": {
+        "name": "Litres totaux"
+      },
+      "liters_daily": {
+        "name": "Litres quotidiens"
+      },
+      "liters_monthly": {
+        "name": "Litres mensuels"
+      },
+      "liters_yearly": {
+        "name": "Litres annuels"
+      },
+      "energy_total_kwh": {
+        "name": "Énergie totale"
+      },
+      "energy_daily_kwh": {
+        "name": "Énergie quotidienne"
+      },
+      "energy_monthly_kwh": {
+        "name": "Énergie mensuelle"
+      },
+      "energy_yearly_kwh": {
+        "name": "Énergie annuelle"
+      }
+    },
+    "binary_sensor": {
+      "error_global": {
+        "name": "Erreur globale"
+      },
+      "error_phc": {
+        "name": "Erreur PHC"
+      },
+      "error_absence": {
+        "name": "Erreur d'absence"
+      },
+      "burner_running": {
+        "name": "Brûleur actif"
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Chaudière fioul",
+        "description": "Configurer l’intégration de la chaudière fioul."
+      },
+      "init": {
+        "title": "Options chaudière fioul",
+        "description": "Régler les seuils et les paramètres de fonctionnement."
+      }
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "domain": "fioul_boiler",
+  "name": "Fioul Boiler Monitor",
+  "version": "2.2.1+i18n1",
+  "documentation": "https://github.com/alexsxb/fioul_boiler",
+  "requirements": [],
+  "codeowners": [
+    "@alexsxb"
+  ],
+  "config_flow": true,
+  "iot_class": "local_polling",
+  "icon": "icons/icon.svg",
+  "logo": "icons/logo.svg"
+}

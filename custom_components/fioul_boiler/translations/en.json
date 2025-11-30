@@ -1,0 +1,71 @@
+{
+  "entity": {
+    "sensor": {
+      "state": {
+        "name": "Boiler state"
+      },
+      "power": {
+        "name": "Electrical power"
+      },
+      "thermal_kw": {
+        "name": "Thermal power"
+      },
+      "flow_lph": {
+        "name": "Flow"
+      },
+      "flow_filtered": {
+        "name": "Flow (filtered)"
+      },
+      "liters_total": {
+        "name": "Total liters"
+      },
+      "liters_daily": {
+        "name": "Daily liters"
+      },
+      "liters_monthly": {
+        "name": "Monthly liters"
+      },
+      "liters_yearly": {
+        "name": "Yearly liters"
+      },
+      "energy_total_kwh": {
+        "name": "Total energy"
+      },
+      "energy_daily_kwh": {
+        "name": "Daily energy"
+      },
+      "energy_monthly_kwh": {
+        "name": "Monthly energy"
+      },
+      "energy_yearly_kwh": {
+        "name": "Yearly energy"
+      }
+    },
+    "binary_sensor": {
+      "error_global": {
+        "name": "Global error"
+      },
+      "error_phc": {
+        "name": "PHC error"
+      },
+      "error_absence": {
+        "name": "Absence error"
+      },
+      "burner_running": {
+        "name": "Burner running"
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Fioul Boiler",
+        "description": "Configure the Fioul Boiler integration."
+      },
+      "init": {
+        "title": "Fioul Boiler Options",
+        "description": "Adjust thresholds and runtime values."
+      }
+    }
+  }
+}

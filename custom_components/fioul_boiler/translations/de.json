@@ -1,0 +1,71 @@
+{
+  "entity": {
+    "sensor": {
+      "state": {
+        "name": "Kesselzustand"
+      },
+      "power": {
+        "name": "Elektrische Leistung"
+      },
+      "thermal_kw": {
+        "name": "Thermische Leistung"
+      },
+      "flow_lph": {
+        "name": "Durchfluss"
+      },
+      "flow_filtered": {
+        "name": "Durchfluss (gefiltert)"
+      },
+      "liters_total": {
+        "name": "Liter gesamt"
+      },
+      "liters_daily": {
+        "name": "Liter täglich"
+      },
+      "liters_monthly": {
+        "name": "Liter monatlich"
+      },
+      "liters_yearly": {
+        "name": "Liter jährlich"
+      },
+      "energy_total_kwh": {
+        "name": "Energie gesamt"
+      },
+      "energy_daily_kwh": {
+        "name": "Energie täglich"
+      },
+      "energy_monthly_kwh": {
+        "name": "Energie monatlich"
+      },
+      "energy_yearly_kwh": {
+        "name": "Energie jährlich"
+      }
+    },
+    "binary_sensor": {
+      "error_global": {
+        "name": "Globaler Fehler"
+      },
+      "error_phc": {
+        "name": "PHC-Fehler"
+      },
+      "error_absence": {
+        "name": "Abwesenheitsfehler"
+      },
+      "burner_running": {
+        "name": "Brenner aktiv"
+      }
+    }
+  },
+  "config": {
+    "step": {
+      "user": {
+        "title": "Ölheizung",
+        "description": "Integration der Ölheizung konfigurieren."
+      },
+      "init": {
+        "title": "Ölheizungs-Optionen",
+        "description": "Schwellwerte und Betriebsparameter anpassen."
+      }
+    }
+  }
+}
