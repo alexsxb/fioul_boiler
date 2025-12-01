@@ -1,14 +1,19 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
+
 from homeassistant.components.sensor import (
     SensorEntity,
     SensorDeviceClass,
     SensorStateClass,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.const import STATE_UNKNOWN, STATE_UNAVAILABLE
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.helpers.restore_state import RestoreEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import FioulBoilerCoordinator
@@ -18,6 +23,7 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities
 ) -> None:
     """Set up Fioul boiler sensors from a config entry."""
+
     coordinator: FioulBoilerCoordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities: list[SensorEntity] = [
@@ -26,6 +32,8 @@ async def async_setup_entry(
         FioulBoilerThermalPowerSensor(coordinator, entry),
         FioulBoilerFlowSensor(coordinator, entry),
         FioulBoilerFlowFilteredSensor(coordinator, entry),
+
+        # Persistent accumulation sensors
         FioulBoilerLitersTotalSensor(coordinator, entry),
         FioulBoilerLitersDailySensor(coordinator, entry),
         FioulBoilerLitersMonthlySensor(coordinator, entry),
@@ -39,8 +47,12 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
+# ---------------------------------------------------------------------------
+# BASE CLASSES
+# ---------------------------------------------------------------------------
+
 class FioulBoilerBaseSensor(CoordinatorEntity[FioulBoilerCoordinator], SensorEntity):
-    """Base class for all Fioul boiler sensors."""
+    """Base class for read-only coordinator values."""
 
     _attr_has_entity_name = True
 
@@ -63,7 +75,7 @@ class FioulBoilerStateSensor(FioulBoilerBaseSensor):
         return "state"
 
     @property
-    def native_value(self) -> str:
+    def native_value(self) -> str | None:
         return self.coordinator.data.get("state_filtered")
 
 
@@ -127,7 +139,45 @@ class FioulBoilerFlowFilteredSensor(FioulBoilerBaseSensor):
         return round(val, 2) if isinstance(val, (int, float)) else None
 
 
-class FioulBoilerLitersTotalSensor(FioulBoilerBaseSensor):
+# ---------------------------------------------------------------------------
+# PERSISTENT ACCUMULATION BASE CLASS
+# ---------------------------------------------------------------------------
+
+class FioulBoilerAccumBase(FioulBoilerBaseSensor, RestoreEntity):
+    """Base class for persistent sensors with delta accumulation."""
+
+    _attr_native_value: float | None = None
+
+    def __init__(self, coordinator: FioulBoilerCoordinator, entry: ConfigEntry) -> None:
+        super().__init__(coordinator, entry)
+        self._last_update: datetime | None = None
+
+    async def async_added_to_hass(self) -> None:
+        """Restore last state from DB."""
+        await super().async_added_to_hass()
+
+        last_state = await self.async_get_last_state()
+        if last_state and last_state.state not in (STATE_UNKNOWN, STATE_UNAVAILABLE):
+            try:
+                self._attr_native_value = float(last_state.state)
+            except Exception:
+                self._attr_native_value = 0.0
+        else:
+            self._attr_native_value = 0.0
+
+        self._last_update = None
+
+    # Default behavior: child classes override this
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self.async_write_ha_state()
+
+
+# ---------------------------------------------------------------------------
+# LITER SENSORS
+# ---------------------------------------------------------------------------
+
+class FioulBoilerLitersTotalSensor(FioulBoilerAccumBase):
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "L"
 
@@ -135,55 +185,115 @@ class FioulBoilerLitersTotalSensor(FioulBoilerBaseSensor):
     def translation_key(self) -> str:
         return "liters_total"
 
-    @property
-    def native_value(self) -> float | None:
-        val = self.coordinator.data.get("liters_total")
-        return round(val, 2) if isinstance(val, (int, float)) else None
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        delta = self.coordinator.data.get("delta_liters") or 0.0
+        current = float(self._attr_native_value or 0.0)
+        self._attr_native_value = round(current + float(delta), 3)
+        self.async_write_ha_state()
 
 
-class FioulBoilerLitersDailySensor(FioulBoilerBaseSensor):
+class FioulBoilerLitersDailySensor(FioulBoilerAccumBase):
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "L"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._last_day = None
 
     @property
     def translation_key(self) -> str:
         return "liters_daily"
 
-    @property
-    def native_value(self) -> float | None:
-        val = self.coordinator.data.get("liters_daily")
-        return round(val, 2) if isinstance(val, (int, float)) else None
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        now = dt_util.now()
+        self._last_day = now.day
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        delta = self.coordinator.data.get("delta_liters") or 0.0
+        now = dt_util.now()
+
+        if self._last_day is None or now.day != self._last_day:
+            current = 0.0
+            self._last_day = now.day
+        else:
+            current = float(self._attr_native_value or 0.0)
+
+        self._attr_native_value = round(current + float(delta), 3)
+        self.async_write_ha_state()
 
 
-class FioulBoilerLitersMonthlySensor(FioulBoilerBaseSensor):
+class FioulBoilerLitersMonthlySensor(FioulBoilerAccumBase):
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "L"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._last_month = None
 
     @property
     def translation_key(self) -> str:
         return "liters_monthly"
 
-    @property
-    def native_value(self) -> float | None:
-        val = self.coordinator.data.get("liters_monthly")
-        return round(val, 2) if isinstance(val, (int, float)) else None
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        now = dt_util.now()
+        self._last_month = now.month
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        delta = self.coordinator.data.get("delta_liters") or 0.0
+        now = dt_util.now()
+
+        if self._last_month is None or now.month != self._last_month:
+            current = 0.0
+            self._last_month = now.month
+        else:
+            current = float(self._attr_native_value or 0.0)
+
+        self._attr_native_value = round(current + float(delta), 3)
+        self.async_write_ha_state()
 
 
-class FioulBoilerLitersYearlySensor(FioulBoilerBaseSensor):
+class FioulBoilerLitersYearlySensor(FioulBoilerAccumBase):
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "L"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._last_year = None
 
     @property
     def translation_key(self) -> str:
         return "liters_yearly"
 
-    @property
-    def native_value(self) -> float | None:
-        val = self.coordinator.data.get("liters_yearly")
-        return round(val, 2) if isinstance(val, (int, float)) else None
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        now = dt_util.now()
+        self._last_year = now.year
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        delta = self.coordinator.data.get("delta_liters") or 0.0
+        now = dt_util.now()
+
+        if self._last_year is None or now.year != self._last_year:
+            current = 0.0
+            self._last_year = now.year
+        else:
+            current = float(self._attr_native_value or 0.0)
+
+        self._attr_native_value = round(current + float(delta), 3)
+        self.async_write_ha_state()
 
 
-class FioulBoilerEnergyTotalSensor(FioulBoilerBaseSensor):
+# ---------------------------------------------------------------------------
+# ENERGY SENSORS
+# ---------------------------------------------------------------------------
+
+class FioulBoilerEnergyTotalSensor(FioulBoilerAccumBase):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "kWh"
@@ -192,52 +302,105 @@ class FioulBoilerEnergyTotalSensor(FioulBoilerBaseSensor):
     def translation_key(self) -> str:
         return "energy_total_kwh"
 
-    @property
-    def native_value(self) -> float | None:
-        val = self.coordinator.data.get("energy_total_kwh")
-        return round(val, 3) if isinstance(val, (int, float)) else None
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        delta = self.coordinator.data.get("delta_energy_kwh") or 0.0
+        current = float(self._attr_native_value or 0.0)
+        self._attr_native_value = round(current + float(delta), 4)
+        self.async_write_ha_state()
 
 
-class FioulBoilerEnergyDailySensor(FioulBoilerBaseSensor):
+class FioulBoilerEnergyDailySensor(FioulBoilerAccumBase):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "kWh"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._last_day = None
 
     @property
     def translation_key(self) -> str:
         return "energy_daily_kwh"
 
-    @property
-    def native_value(self) -> float | None:
-        val = self.coordinator.data.get("energy_daily_kwh")
-        return round(val, 3) if isinstance(val, (int, float)) else None
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._last_day = dt_util.now().day
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        delta = self.coordinator.data.get("delta_energy_kwh") or 0.0
+        now = dt_util.now()
+
+        if self._last_day is None or now.day != self._last_day:
+            current = 0.0
+            self._last_day = now.day
+        else:
+            current = float(self._attr_native_value or 0.0)
+
+        self._attr_native_value = round(current + float(delta), 4)
+        self.async_write_ha_state()
 
 
-class FioulBoilerEnergyMonthlySensor(FioulBoilerBaseSensor):
+class FioulBoilerEnergyMonthlySensor(FioulBoilerAccumBase):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "kWh"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._last_month = None
 
     @property
     def translation_key(self) -> str:
         return "energy_monthly_kwh"
 
-    @property
-    def native_value(self) -> float | None:
-        val = self.coordinator.data.get("energy_monthly_kwh")
-        return round(val, 3) if isinstance(val, (int, float)) else None
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._last_month = dt_util.now().month
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        delta = self.coordinator.data.get("delta_energy_kwh") or 0.0
+        now = dt_util.now()
+
+        if self._last_month is None or now.month != self._last_month:
+            current = 0.0
+            self._last_month = now.month
+        else:
+            current = float(self._attr_native_value or 0.0)
+
+        self._attr_native_value = round(current + float(delta), 4)
+        self.async_write_ha_state()
 
 
-class FioulBoilerEnergyYearlySensor(FioulBoilerBaseSensor):
+class FioulBoilerEnergyYearlySensor(FioulBoilerAccumBase):
     _attr_device_class = SensorDeviceClass.ENERGY
     _attr_state_class = SensorStateClass.TOTAL_INCREASING
     _attr_native_unit_of_measurement = "kWh"
+
+    def __init__(self, coordinator, entry):
+        super().__init__(coordinator, entry)
+        self._last_year = None
 
     @property
     def translation_key(self) -> str:
         return "energy_yearly_kwh"
 
-    @property
-    def native_value(self) -> float | None:
-        val = self.coordinator.data.get("energy_yearly_kwh")
-        return round(val, 3) if isinstance(val, (int, float)) else None
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._last_year = dt_util.now().year
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        delta = self.coordinator.data.get("delta_energy_kwh") or 0.0
+        now = dt_util.now()
+
+        if self._last_year is None or now.year != self._last_year:
+            current = 0.0
+            self._last_year = now.year
+        else:
+            current = float(self._attr_native_value or 0.0)
+
+        self._attr_native_value = round(current + float(delta), 4)
+        self.async_write_ha_state()

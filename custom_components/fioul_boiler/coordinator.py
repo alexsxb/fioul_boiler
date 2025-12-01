@@ -31,33 +31,26 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
-    """Coordinator converting power readings into boiler state, liters and energy.
+    """
+    Coordinator converting power readings into boiler state and deltas.
 
-    Fehlerlogik nach zwei klaren Bedingungen:
+    Er liefert nur noch Momentanwerte und Delta-Mengen, die von den
+    Sensor-Entitäten in Home Assistant persistiert und integriert werden.
+
+    Fehlerlogik:
 
     1. PHC-Fehler:
-
        - Gefilterter Zustand war mindestens 20 Sekunden im Pré-chauffage-Zustand
          (STATE_PRECH).
        - Danach startet eine Prüfphase von 2 Minuten.
        - Wenn nach Ablauf dieser 2 Minuten der gefilterte Zustand nicht im
          Brennerzustand (STATE_BURN) ist **und** dieser Zustandswechsel zum
-         Brenner nicht mindestens 20 Sekunden stabil anhält, wird
-         ``error_phc = True`` gesetzt.
-
-       Mit anderen Worten: Nach einem ausreichend langen Pré-chauffage erwarten
-       wir innerhalb von 2 Minuten einen stabilen Brennerlauf von mindestens
-       20 Sekunden.
+         Brenner nicht mindestens 20 Sekunden stabil anhält, wird ein PHC-Fehler gesetzt.
 
     2. Abwesenheits-Fehler (>1h kein Brennerlauf):
-
-       - Wenn der Brennerzustand (STATE_BURN) länger als 1 Stunde nicht aktiv
-         war, wird ``error_absence = True`` gesetzt.
-       - Ausgenommen sind Zustände, in denen die Heizung bewusst nicht laufen
-         soll: Arrêt (STATE_ARRET) und Mode nuit / vacances (STATE_NUIT).
-
-    Der globale Fehlerstatus ``error_global`` ist das logische ODER beider
-    Fehlerbedingungen.
+       - Wenn der Brennerzustand länger als 1 Stunde nicht aktiv war,
+         wird error_absence = True gesetzt.
+       - Ausgenommen: Arrêt (STATE_ARRET) und Mode nuit (STATE_NUIT).
     """
 
     def __init__(self, hass: HomeAssistant, entry) -> None:
@@ -67,34 +60,29 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.power_entity_id: str = entry.data[CONF_POWER_SENSOR]
 
         opts = entry.options or {}
-        self.lph_run: float = opts.get(CONF_LPH_RUN, entry.data.get(CONF_LPH_RUN, DEFAULT_LPH_RUN))
-        self.debounce: int = opts.get(CONF_DEBOUNCE, entry.data.get(CONF_DEBOUNCE, DEFAULT_DEBOUNCE))
-        self.kwh_per_liter: float = opts.get(CONF_KWH_PER_LITER, DEFAULT_KWH_PER_LITER)
+        self.lph_run = opts.get(CONF_LPH_RUN, entry.data.get(CONF_LPH_RUN, DEFAULT_LPH_RUN))
+        self.debounce = opts.get(CONF_DEBOUNCE, entry.data.get(CONF_DEBOUNCE, DEFAULT_DEBOUNCE))
+        self.kwh_per_liter = opts.get(CONF_KWH_PER_LITER, DEFAULT_KWH_PER_LITER)
 
         thresholds_opt = opts.get("thresholds") or {}
         self.thresholds: dict[str, float] = {**DEFAULT_THRESHOLDS, **thresholds_opt}
 
-        # Zeit-/Zustands-Tracking (Rohzustand)
+        # Time/state tracking
         self._last_update: Optional[datetime] = None
         self._last_raw_state: str = STATE_ARRET
         self._last_raw_state_change: Optional[datetime] = None
 
-        # Gefilterter Zustand (Debounce) für die Fehlerlogik
+        # Debounced state tracking
         self._last_state_filtered: str = STATE_ARRET
         self._last_state_filtered_change: Optional[datetime] = None
 
-        # PHC-Fehlerlogik
-        self._phc_pending: bool = False
+        # PHC error tracking
+        self._phc_pending = False
         self._phc_check_base_time: Optional[datetime] = None
-        self._phc_error: bool = False
+        self._phc_error = False
 
-        # Letzter sicherer Brennerlauf für 1h-Abwesenheitsprüfung
+        # Last valid burn (for >1h absence detection)
         self._burn_last_ok: Optional[datetime] = None
-
-        # Tages/Monats/Jahres-Grenzen für Zählersummen
-        self._last_day: Optional[int] = None
-        self._last_month: Optional[int] = None
-        self._last_year: Optional[int] = None
 
         super().__init__(
             hass,
@@ -106,19 +94,19 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         now = datetime.utcnow()
 
-        # Leistungswert aus dem konfigurierten Sensor lesen
+        # Read power
         state_obj = self.hass.states.get(self.power_entity_id)
         if state_obj is None or state_obj.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             power = 0.0
         else:
             try:
                 power = float(state_obj.state)
-            except (ValueError, TypeError) as err:
+            except Exception as err:
                 raise UpdateFailed(f"Invalid power value: {state_obj.state}") from err
 
         t = self.thresholds
 
-        # Rohzustand aus Leistung ableiten
+        # Determine raw state
         if power < t["arret"]:
             state_raw = STATE_ARRET
         elif power < t["nuit"]:
@@ -134,15 +122,15 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         else:
             state_raw = STATE_HORS
 
-        # Änderung des Rohzustands tracken
+        # Raw state change tracking
         if self._last_raw_state_change is None or state_raw != self._last_raw_state:
             self._last_raw_state = state_raw
             self._last_raw_state_change = now
 
-        prev_data = self.data or {}  # type: ignore[assignment]
+        prev_data = self.data or {}
         prev_filtered = prev_data.get("state_filtered", state_raw)
 
-        # Debounce → gefilterter Zustand
+        # Debounce
         if self._last_raw_state_change is None:
             state_filtered = state_raw
         else:
@@ -152,118 +140,59 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 state_filtered = prev_filtered
 
-        # Gefilterten Zustandsverlauf für die Fehlerlogik nachhalten
+        # Track filtered duration (for error logic)
         if self._last_state_filtered_change is None:
-            # Initialisierung beim ersten Durchlauf
             self._last_state_filtered = state_filtered
             self._last_state_filtered_change = now
         elif state_filtered != self._last_state_filtered:
-            # Zustandswechsel → Dauer des vorherigen gefilterten Zustands bestimmen
             prev_state = self._last_state_filtered
             prev_duration = (now - self._last_state_filtered_change).total_seconds()
 
-            # Ende eines relevanten Pré-chauffage-Zyklus
+            # PCR detection: Pre-chauffage expired cleanly
             if prev_state == STATE_PRECH and prev_duration >= 20.0:
-                # PHC war lang genug → wir starten eine 2-Minuten-Prüfphase
                 self._phc_pending = True
                 self._phc_check_base_time = now
                 self._phc_error = False
 
-            # Zustandswechsel protokollieren
             self._last_state_filtered = state_filtered
             self._last_state_filtered_change = now
 
-        # PHC-Prüfung: nach 2 Minuten muss ein stabiler Brennerlauf vorliegen
+        # PCR evaluation after 2 minutes
         if self._phc_pending and self._phc_check_base_time is not None:
             check_time = self._phc_check_base_time + timedelta(minutes=2)
             if now >= check_time:
-                # Wir prüfen, ob der Brennerzustand aktiv und stabil genug ist
-                if state_filtered == STATE_BURN and self._last_state_filtered_change is not None:
+                if state_filtered == STATE_BURN and self._last_state_filtered_change:
                     burn_duration = (now - self._last_state_filtered_change).total_seconds()
                     if burn_duration >= 20.0:
-                        # Brenner läuft stabil → PHC erfolgreich
                         self._phc_error = False
-                        self._phc_pending = False
-                        self._phc_check_base_time = None
-                        # Diesen Zeitpunkt als letzten sicheren Brennerlauf merken
                         self._burn_last_ok = now
                     else:
-                        # Brenner läuft, aber noch nicht lange genug → PHC-Fehler
                         self._phc_error = True
-                        self._phc_pending = False
-                        self._phc_check_base_time = None
                 else:
-                    # Kein Brennerzustand nach 2 Minuten → PHC-Fehler
                     self._phc_error = True
-                    self._phc_pending = False
-                    self._phc_check_base_time = None
 
-        # Brennerlaufstatus aus gefiltertem Zustand ableiten
+                self._phc_pending = False
+                self._phc_check_base_time = None
+
+        # Burner running?
         burner_running = state_filtered == STATE_BURN
 
-        # Unabhängig von der PHC-Logik: jeden stabilen Brennerlauf ≥20s als "OK" zählen
-        if burner_running and self._last_state_filtered_change is not None:
-            burn_duration_now = (now - self._last_state_filtered_change).total_seconds()
-            if burn_duration_now >= 20.0:
-                self._burn_last_ok = now
-
-        # Durchsatz
+        # Flow L/h
         flow_lph = self.lph_run if burner_running else 0.0
         flow_filtered = flow_lph if flow_lph >= 0.5 else 0.0
 
-        # Zeitdifferenz für Integration
+        # Time delta
         if self._last_update is None:
             dt_hours = 0.0
         else:
             dt_hours = (now - self._last_update).total_seconds() / 3600.0
         self._last_update = now
 
-        # Litersummen
-        prev_liters_total = prev_data.get("liters_total", 0.0)
-        prev_liters_daily = prev_data.get("liters_daily", 0.0)
-        prev_liters_monthly = prev_data.get("liters_monthly", 0.0)
-        prev_liters_yearly = prev_data.get("liters_yearly", 0.0)
+        # Deltas for persistent sensors
+        delta_liters = flow_filtered * dt_hours
+        delta_energy_kwh = delta_liters * self.kwh_per_liter
 
-        if self._last_day is None:
-            self._last_day = now.day
-            self._last_month = now.month
-            self._last_year = now.year
-
-        liters_increment = flow_filtered * dt_hours  # L/h * h = L
-
-        liters_total = prev_liters_total + liters_increment
-
-        if now.day != self._last_day:
-            liters_daily = liters_increment
-            self._last_day = now.day
-        else:
-            liters_daily = prev_liters_daily + liters_increment
-
-        if now.month != self._last_month:
-            liters_monthly = liters_increment
-            self._last_month = now.month
-        else:
-            liters_monthly = prev_liters_monthly + liters_increment
-
-        if now.year != self._last_year:
-            liters_yearly = liters_increment
-            self._last_year = now.year
-        else:
-            liters_yearly = prev_liters_yearly + liters_increment
-
-        # Energie aus Liter * Brennwert
-        energy_total_kwh = liters_total * self.kwh_per_liter
-        energy_daily_kwh = liters_daily * self.kwh_per_liter
-        energy_monthly_kwh = liters_monthly * self.kwh_per_liter
-        energy_yearly_kwh = liters_yearly * self.kwh_per_liter
-
-        # "Thermische" Momentanleistung in kW (L/h * kWh/L = kW)
-        thermal_kw = flow_filtered * self.kwh_per_liter
-
-        # Fehlerflags gemäß neuer Logik
-        error_phc = self._phc_error
-
-        # Abwesenheits-Fehler: >1h kein Brennerlauf, außer bei Arrêt/Nuit
+        # Absence error logic (>1h no burn)
         if state_filtered in (STATE_ARRET, STATE_NUIT):
             error_absence = False
         else:
@@ -272,7 +201,7 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 error_absence = (now - self._burn_last_ok) > timedelta(hours=1)
 
-        # Globaler Fehlerstatus
+        error_phc = self._phc_error
         error_global = error_phc or error_absence
 
         return {
@@ -280,18 +209,11 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "state_raw": state_raw,
             "state_filtered": state_filtered,
             "burner_running": burner_running,
-            "error_global": error_global,
-            "error_phc": error_phc,
-            "error_absence": error_absence,
             "flow_lph": flow_lph,
             "flow_filtered": flow_filtered,
-            "liters_total": liters_total,
-            "liters_daily": liters_daily,
-            "liters_monthly": liters_monthly,
-            "liters_yearly": liters_yearly,
-            "energy_total_kwh": energy_total_kwh,
-            "energy_daily_kwh": energy_daily_kwh,
-            "energy_monthly_kwh": energy_monthly_kwh,
-            "energy_yearly_kwh": energy_yearly_kwh,
-            "thermal_kw": thermal_kw,
+            "delta_liters": delta_liters,
+            "delta_energy_kwh": delta_energy_kwh,
+            "error_phc": error_phc,
+            "error_absence": error_absence,
+            "error_global": error_global,
         }
