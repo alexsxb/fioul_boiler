@@ -12,7 +12,6 @@ from .const import DOMAIN
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_entities):
-
     coordinator = hass.data[DOMAIN][entry.entry_id]
 
     entities = [
@@ -31,6 +30,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry, async_add_e
     async_add_entities(entities)
 
 
+# -------------------------------------------------------------
+# Basisklasse für alle Sensoren
+# -------------------------------------------------------------
+
 class BaseFioulSensor(SensorEntity):
     _attr_should_poll = False
 
@@ -38,14 +41,34 @@ class BaseFioulSensor(SensorEntity):
         self.coordinator = coordinator
         self.entry = entry
 
+    # Wird als verfügbar behandelt, solange der Coordinator läuft
     @property
     def available(self):
         return True
+
+    # WICHTIG: Damit die Entitäten der Integration zugeordnet werden
+    @property
+    def device_info(self):
+        return {
+            "identifiers": {(DOMAIN, self.entry.entry_id)},
+            "name": "Fioul Boiler",
+            "manufacturer": "Custom Integration",
+            "model": "Fioul Burner Monitor",
+        }
+
+    # WICHTIG: unique_id → HA speichert Werte korrekt
+    @property
+    def unique_id(self):
+        return f"{self.entry.entry_id}_{self.__class__.__name__}"
 
     @property
     def extra_state_attributes(self):
         return {}
 
+
+# -------------------------------------------------------------
+# Einzelne Sensoren
+# -------------------------------------------------------------
 
 class FioulBoilerPowerSensor(BaseFioulSensor):
     _attr_name = "Elektrische Leistung"
@@ -56,19 +79,16 @@ class FioulBoilerPowerSensor(BaseFioulSensor):
 
     @property
     def native_value(self):
-        return self.coordinator.data.get("power")
+        return self.coordinator.data.get("power", 0.0)
 
 
 class FioulBoilerStateSensor(BaseFioulSensor):
     _attr_name = "Kesselzustand"
-
-    @property
-    def icon(self):
-        return "mdi:eye"
+    _attr_icon = "mdi:eye"
 
     @property
     def native_value(self):
-        return self.coordinator.data.get("state_filtered")
+        return self.coordinator.data.get("state_filtered", "unknown")
 
 
 class FioulBoilerBurnerActiveSensor(BaseFioulSensor):
@@ -77,19 +97,19 @@ class FioulBoilerBurnerActiveSensor(BaseFioulSensor):
 
     @property
     def native_value(self):
-        val = self.coordinator.data.get("burner_running")
-        return "An" if val else "Aus"
+        running = self.coordinator.data.get("burner_running", False)
+        return "An" if running else "Aus"
 
 
 class FioulBoilerFlowSensor(BaseFioulSensor):
     _attr_name = "Durchfluss"
     _attr_icon = "mdi:pipe-valve"
-    _attr_state_class = SensorStateClass.MEASUREMENT
     _attr_native_unit_of_measurement = "L/h"
+    _attr_state_class = SensorStateClass.MEASUREMENT
 
     @property
     def native_value(self):
-        return self.coordinator.data.get("flow_lph")
+        return self.coordinator.data.get("flow_lph", 0.0)
 
 
 class FioulBoilerThermalPowerSensor(BaseFioulSensor):
@@ -100,7 +120,7 @@ class FioulBoilerThermalPowerSensor(BaseFioulSensor):
 
     @property
     def native_value(self):
-        return self.coordinator.data.get("thermal_power")
+        return self.coordinator.data.get("thermal_power", 0.0)
 
 
 class FioulBoilerDeltaLitersSensor(BaseFioulSensor):
@@ -111,7 +131,7 @@ class FioulBoilerDeltaLitersSensor(BaseFioulSensor):
 
     @property
     def native_value(self):
-        return self.coordinator.data.get("delta_liters")
+        return self.coordinator.data.get("delta_liters", 0.0)
 
 
 class FioulBoilerDeltaEnergySensor(BaseFioulSensor):
@@ -122,7 +142,7 @@ class FioulBoilerDeltaEnergySensor(BaseFioulSensor):
 
     @property
     def native_value(self):
-        return self.coordinator.data.get("delta_energy_kwh")
+        return self.coordinator.data.get("delta_energy_kwh", 0.0)
 
 
 class FioulBoilerErrorPHCSensor(BaseFioulSensor):
@@ -131,7 +151,7 @@ class FioulBoilerErrorPHCSensor(BaseFioulSensor):
 
     @property
     def native_value(self):
-        return "OK" if not self.coordinator.data.get("error_phc") else "Problem"
+        return "Problem" if self.coordinator.data.get("error_phc") else "OK"
 
 
 class FioulBoilerErrorAbsenceSensor(BaseFioulSensor):
@@ -140,7 +160,7 @@ class FioulBoilerErrorAbsenceSensor(BaseFioulSensor):
 
     @property
     def native_value(self):
-        return "OK" if not self.coordinator.data.get("error_absence") else "Problem"
+        return "Problem" if self.coordinator.data.get("error_absence") else "OK"
 
 
 class FioulBoilerErrorGlobalSensor(BaseFioulSensor):
@@ -149,4 +169,4 @@ class FioulBoilerErrorGlobalSensor(BaseFioulSensor):
 
     @property
     def native_value(self):
-        return "OK" if not self.coordinator.data.get("error_global") else "Problem"
+        return "Problem" if self.coordinator.data.get("error_global") else "OK"
