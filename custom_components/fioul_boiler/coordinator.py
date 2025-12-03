@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 from typing import Any, Optional
-
 import logging
 
 from homeassistant.core import HomeAssistant
@@ -32,25 +31,12 @@ _LOGGER = logging.getLogger(__name__)
 
 class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """
-    Coordinator converting power readings into boiler state and deltas.
+    Coordinator converting power readings into boiler state, errors,
+    and providing deltas for sensors.
 
-    Er liefert nur noch Momentanwerte und Delta-Mengen, die von den
-    Sensor-Entitäten in Home Assistant persistiert und integriert werden.
-
-    Fehlerlogik:
-
-    1. PHC-Fehler:
-       - Gefilterter Zustand war mindestens 20 Sekunden im Pré-chauffage-Zustand
-         (STATE_PRECH).
-       - Danach startet eine Prüfphase von 2 Minuten.
-       - Wenn nach Ablauf dieser 2 Minuten der gefilterte Zustand nicht im
-         Brennerzustand (STATE_BURN) ist **und** dieser Zustandswechsel zum
-         Brenner nicht mindestens 20 Sekunden stabil anhält, wird ein PHC-Fehler gesetzt.
-
-    2. Abwesenheits-Fehler (>1h kein Brennerlauf):
-       - Wenn der Brennerzustand länger als 1 Stunde nicht aktiv war,
-         wird error_absence = True gesetzt.
-       - Ausgenommen: Arrêt (STATE_ARRET) und Mode nuit (STATE_NUIT).
+    Diese Version nutzt eine klassische Brenner-Phasen-Logik:
+    Verbrauch wird **nur beim Ende eines vollständigen BURN-Zyklus**
+    berechnet – exakt wie bei einer echten Brennerlaufzeit-Auswertung.
     """
 
     def __init__(self, hass: HomeAssistant, entry) -> None:
@@ -64,6 +50,7 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.debounce = opts.get(CONF_DEBOUNCE, entry.data.get(CONF_DEBOUNCE, DEFAULT_DEBOUNCE))
         self.kwh_per_liter = opts.get(CONF_KWH_PER_LITER, DEFAULT_KWH_PER_LITER)
 
+        # Threshold overrides
         thresholds_opt = opts.get("thresholds") or {}
         self.thresholds: dict[str, float] = {**DEFAULT_THRESHOLDS, **thresholds_opt}
 
@@ -72,7 +59,7 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._last_raw_state: str = STATE_ARRET
         self._last_raw_state_change: Optional[datetime] = None
 
-        # Debounced state tracking
+        # Debounced state
         self._last_state_filtered: str = STATE_ARRET
         self._last_state_filtered_change: Optional[datetime] = None
 
@@ -81,8 +68,12 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self._phc_check_base_time: Optional[datetime] = None
         self._phc_error = False
 
-        # Last valid burn (for >1h absence detection)
+        # Last valid Burn
         self._burn_last_ok: Optional[datetime] = None
+
+        # Echte Burn-Phasen (manueller Zähler-Modus)
+        self._burn_active = False
+        self._burn_start_time: Optional[datetime] = None
 
         super().__init__(
             hass,
@@ -94,7 +85,9 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_update_data(self) -> dict[str, Any]:
         now = datetime.utcnow()
 
-        # Read power
+        # --------------------------------------
+        # POWER EINLESEN
+        # --------------------------------------
         state_obj = self.hass.states.get(self.power_entity_id)
         if state_obj is None or state_obj.state in (STATE_UNAVAILABLE, STATE_UNKNOWN):
             power = 0.0
@@ -106,7 +99,9 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
 
         t = self.thresholds
 
-        # Determine raw state
+        # --------------------------------------
+        # ROH-ZUSTAND ERMITTELN
+        # --------------------------------------
         if power < t["arret"]:
             state_raw = STATE_ARRET
         elif power < t["nuit"]:
@@ -122,15 +117,17 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         else:
             state_raw = STATE_HORS
 
-        # Raw state change tracking
+        # Roh-Zustand Tracking
         if self._last_raw_state_change is None or state_raw != self._last_raw_state:
             self._last_raw_state = state_raw
             self._last_raw_state_change = now
 
+        # --------------------------------------
+        # DEBOUNCE-FILTERUNG
+        # --------------------------------------
         prev_data = self.data or {}
         prev_filtered = prev_data.get("state_filtered", state_raw)
 
-        # Debounce
         if self._last_raw_state_change is None:
             state_filtered = state_raw
         else:
@@ -140,16 +137,17 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 state_filtered = prev_filtered
 
-        # Track filtered duration (for error logic)
+        # Track filtered state change
         if self._last_state_filtered_change is None:
             self._last_state_filtered = state_filtered
             self._last_state_filtered_change = now
+
         elif state_filtered != self._last_state_filtered:
             prev_state = self._last_state_filtered
             prev_duration = (now - self._last_state_filtered_change).total_seconds()
 
-            # PCR detection: Pre-chauffage expired cleanly
-            if prev_state == STATE_PRECH and prev_duration >= 20.0:
+            # PHC: Pré-chauffage lange genug → pending
+            if prev_state == STATE_PRECH and prev_duration >= 15.0:
                 self._phc_pending = True
                 self._phc_check_base_time = now
                 self._phc_error = False
@@ -157,8 +155,10 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_state_filtered = state_filtered
             self._last_state_filtered_change = now
 
-        # PCR evaluation after 2 minutes
-        if self._phc_pending and self._phc_check_base_time is not None:
+        # --------------------------------------
+        # PHC EVAL NACH 2 MIN
+        # --------------------------------------
+        if self._phc_pending and self._phc_check_base_time:
             check_time = self._phc_check_base_time + timedelta(minutes=2)
             if now >= check_time:
                 if state_filtered == STATE_BURN and self._last_state_filtered_change:
@@ -174,25 +174,9 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._phc_pending = False
                 self._phc_check_base_time = None
 
-        # Burner running?
-        burner_running = state_filtered == STATE_BURN
-
-        # Flow L/h
-        flow_lph = self.lph_run if burner_running else 0.0
-        flow_filtered = flow_lph if flow_lph >= 0.5 else 0.0
-
-        # Time delta
-        if self._last_update is None:
-            dt_hours = 0.0
-        else:
-            dt_hours = (now - self._last_update).total_seconds() / 3600.0
-        self._last_update = now
-
-        # Deltas for persistent sensors
-        delta_liters = flow_filtered * dt_hours
-        delta_energy_kwh = delta_liters * self.kwh_per_liter
-
-        # Absence error logic (>1h no burn)
+        # --------------------------------------
+        # >1H ABSENCE-LOGIK
+        # --------------------------------------
         if state_filtered in (STATE_ARRET, STATE_NUIT):
             error_absence = False
         else:
@@ -204,13 +188,37 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         error_phc = self._phc_error
         error_global = error_phc or error_absence
 
+        # --------------------------------------
+        # KLASSISCHE BRENNER-PHASEN-LOGIK
+        # --------------------------------------
+        delta_liters = 0.0
+        delta_energy_kwh = 0.0
+
+        # 1. Start einer Burn-Phase
+        if state_filtered == STATE_BURN and not self._burn_active:
+            self._burn_active = True
+            self._burn_start_time = now
+
+        # 2. Ende einer Burn-Phase → Verbrauch berechnen
+        if self._burn_active and state_filtered != STATE_BURN:
+            if self._burn_start_time:
+                burn_hours = (now - self._burn_start_time).total_seconds() / 3600.0
+                delta_liters = burn_hours * self.lph_run
+                delta_energy_kwh = delta_liters * self.kwh_per_liter
+                self._burn_last_ok = now
+
+            # Reset
+            self._burn_active = False
+            self._burn_start_time = None
+
+        # --------------------------------------
+        # RETURN
+        # --------------------------------------
         return {
             "power": power,
             "state_raw": state_raw,
             "state_filtered": state_filtered,
-            "burner_running": burner_running,
-            "flow_lph": flow_lph,
-            "flow_filtered": flow_filtered,
+            "burner_running": state_filtered == STATE_BURN,
             "delta_liters": delta_liters,
             "delta_energy_kwh": delta_energy_kwh,
             "error_phc": error_phc,
