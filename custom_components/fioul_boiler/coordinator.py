@@ -31,12 +31,15 @@ _LOGGER = logging.getLogger(__name__)
 
 class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """
-    Coordinator converting power readings into boiler state, errors,
-    and providing deltas for sensors.
+    Coordinator converting power readings into boiler state, errors und Deltas.
 
-    Diese Version nutzt eine klassische Brenner-Phasen-Logik:
-    Verbrauch wird **nur beim Ende eines vollständigen BURN-Zyklus**
-    berechnet – exakt wie bei einer echten Brennerlaufzeit-Auswertung.
+    Verbrauchslogik:
+    - Es wird nur beim Ende einer vollständigen BURN-Phase ein Delta berechnet.
+    - Während der Laufphase wird nichts integriert (klassischer „Brennerlaufzeit-Zähler“).
+
+    Anzeige-Logik:
+    - Durchfluss (L/h) und thermische Leistung (kW) werden zustandsabhängig angezeigt,
+      beeinflussen aber die Delta-Berechnung nicht.
     """
 
     def __init__(self, hass: HomeAssistant, entry) -> None:
@@ -50,25 +53,24 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         self.debounce = opts.get(CONF_DEBOUNCE, entry.data.get(CONF_DEBOUNCE, DEFAULT_DEBOUNCE))
         self.kwh_per_liter = opts.get(CONF_KWH_PER_LITER, DEFAULT_KWH_PER_LITER)
 
-        # Threshold overrides
+        # Schwellwerte für die Zustände, ggf. aus Optionen überschrieben
         thresholds_opt = opts.get("thresholds") or {}
         self.thresholds: dict[str, float] = {**DEFAULT_THRESHOLDS, **thresholds_opt}
 
-        # Time/state tracking
-        self._last_update: Optional[datetime] = None
+        # Zeit- / Zustands-Tracking für Rohzustand
         self._last_raw_state: str = STATE_ARRET
         self._last_raw_state_change: Optional[datetime] = None
 
-        # Debounced state
+        # Gefilterter Zustand (Debounce)
         self._last_state_filtered: str = STATE_ARRET
         self._last_state_filtered_change: Optional[datetime] = None
 
-        # PHC error tracking
+        # PHC-Fehler-Tracking
         self._phc_pending = False
         self._phc_check_base_time: Optional[datetime] = None
         self._phc_error = False
 
-        # Last valid Burn
+        # Letzter „okayer“ Burn für >1h-Abwesenheitsfehler
         self._burn_last_ok: Optional[datetime] = None
 
         # Echte Burn-Phasen (manueller Zähler-Modus)
@@ -137,7 +139,7 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             else:
                 state_filtered = prev_filtered
 
-        # Track filtered state change
+        # Gefilterten Zustandswechsel tracken
         if self._last_state_filtered_change is None:
             self._last_state_filtered = state_filtered
             self._last_state_filtered_change = now
@@ -146,7 +148,7 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             prev_state = self._last_state_filtered
             prev_duration = (now - self._last_state_filtered_change).total_seconds()
 
-            # PHC: Pré-chauffage lange genug → pending
+            # PHC: Pré-chauffage ausreichend lang → PHC-Prüffenster setzen
             if prev_state == STATE_PRECH and prev_duration >= 15.0:
                 self._phc_pending = True
                 self._phc_check_base_time = now
@@ -156,7 +158,7 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._last_state_filtered_change = now
 
         # --------------------------------------
-        # PHC EVAL NACH 2 MIN
+        # PHC-EVAL NACH 2 MINUTEN
         # --------------------------------------
         if self._phc_pending and self._phc_check_base_time:
             check_time = self._phc_check_base_time + timedelta(minutes=2)
@@ -175,7 +177,7 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self._phc_check_base_time = None
 
         # --------------------------------------
-        # >1H ABSENCE-LOGIK
+        # >1H-ABSENCE-LOGIK
         # --------------------------------------
         if state_filtered in (STATE_ARRET, STATE_NUIT):
             error_absence = False
@@ -189,17 +191,17 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         error_global = error_phc or error_absence
 
         # --------------------------------------
-        # KLASSISCHE BRENNER-PHASEN-LOGIK
+        # KLASSSISCHE BRENNER-PHASEN-LOGIK (VERBRAUCH)
         # --------------------------------------
         delta_liters = 0.0
         delta_energy_kwh = 0.0
 
-        # 1. Start einer Burn-Phase
+        # Start einer Burn-Phase
         if state_filtered == STATE_BURN and not self._burn_active:
             self._burn_active = True
             self._burn_start_time = now
 
-        # 2. Ende einer Burn-Phase → Verbrauch berechnen
+        # Ende einer Burn-Phase → Verbrauch berechnen
         if self._burn_active and state_filtered != STATE_BURN:
             if self._burn_start_time:
                 burn_hours = (now - self._burn_start_time).total_seconds() / 3600.0
@@ -212,13 +214,32 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._burn_start_time = None
 
         # --------------------------------------
-        # RETURN
+        # DURCHFLUSS & THERMISCHE LEISTUNG (ANZEIGE)
+        # --------------------------------------
+        if state_filtered == STATE_BURN:
+            display_flow_lph = self.lph_run
+
+        elif state_filtered == STATE_PRECH:
+            # symbolischer minimaler Durchfluss während Pré-chauffage
+            display_flow_lph = self.lph_run * 0.1
+
+        else:
+            display_flow_lph = 0.0
+
+        # Thermische Leistung (kW)
+        display_thermal_power = display_flow_lph * self.kwh_per_liter
+
+        # --------------------------------------
+        # RETURN AN HOME ASSISTANT
         # --------------------------------------
         return {
             "power": power,
             "state_raw": state_raw,
             "state_filtered": state_filtered,
             "burner_running": state_filtered == STATE_BURN,
+            "flow_lph": display_flow_lph,
+            "flow_filtered": display_flow_lph,
+            "thermal_power": display_thermal_power,
             "delta_liters": delta_liters,
             "delta_energy_kwh": delta_energy_kwh,
             "error_phc": error_phc,

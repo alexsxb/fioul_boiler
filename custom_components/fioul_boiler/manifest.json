@@ -1,7 +1,7 @@
 {
   "domain": "fioul_boiler",
   "name": "Fioul Boiler Monitor",
-  "version": "2.2.1+i18n1",
+  "version": "0.0.4a",
   "documentation": "https://github.com/alexsxb/fioul_boiler",
   "requirements": [],
   "codeowners": [

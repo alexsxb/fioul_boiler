@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 DOMAIN = "fioul_boiler"
 
 CONF_POWER_SENSOR = "power_sensor"
@@ -8,24 +6,23 @@ CONF_DEBOUNCE = "debounce"
 CONF_KWH_PER_LITER = "kwh_per_liter"
 
 DEFAULT_LPH_RUN = 2.1
-DEFAULT_DEBOUNCE = 10
-DEFAULT_KWH_PER_LITER = 10.0  # Durchschnittlicher Brennwert von Heizöl (~10 kWh/L)
+DEFAULT_DEBOUNCE = 3
+DEFAULT_KWH_PER_LITER = 10.0
 
-# Default thresholds in Watt
-# arret < nuit < pompe < prech < postcirc < burn_max
-DEFAULT_THRESHOLDS: dict[str, float] = {
-    "arret": 1.0,
-    "nuit": 10.0,
-    "pompe": 90.0,
-    "prechauffage": 150.0,
-    "postcirc": 200.0,
-    "burn_max": 500.0,
+# Zustände
+STATE_ARRET = "arret"
+STATE_NUIT = "nuit"
+STATE_POMPE = "pompe"
+STATE_PRECH = "prechauffage"
+STATE_POST = "postcirc"
+STATE_BURN = "burn"
+STATE_HORS = "hors"
+
+DEFAULT_THRESHOLDS = {
+    "arret": 10,
+    "nuit": 40,
+    "pompe": 80,
+    "prechauffage": 200,
+    "postcirc": 400,
+    "burn_max": 2000
 }
-
-STATE_ARRET = "Arrêt"
-STATE_NUIT = "Mode nuit / vacances"
-STATE_POMPE = "Pompe de circulation"
-STATE_PRECH = "Pré-chauffage"
-STATE_POST = "Post-circulation"
-STATE_BURN = "Brûleur en marche"
-STATE_HORS = "Hors plage"
