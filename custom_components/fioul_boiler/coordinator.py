@@ -212,6 +212,26 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             self._burn_start_time = None
 
         # --------------------------------------
+        # DURCHFLUSS & THERMISCHE LEISTUNG (ANZEIGE)
+        # --------------------------------------
+
+        if state_filtered == STATE_BURN:
+            flow_lph = self.lph_run
+
+        elif state_filtered == STATE_PRECH:
+            # symbolischer minimaler Durchfluss
+            flow_lph = self.lph_run * 0.1
+
+        else:
+            flow_lph = 0.0
+
+        # identischer Wert für gefiltert
+        flow_filtered = flow_lph
+
+        # thermische Leistung (kW)
+        thermal_kw = flow_lph * self.kwh_per_liter
+
+        # --------------------------------------
         # RETURN
         # --------------------------------------
         return {
@@ -219,9 +239,19 @@ class FioulBoilerCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             "state_raw": state_raw,
             "state_filtered": state_filtered,
             "burner_running": state_filtered == STATE_BURN,
+
+            # Anzeigen sicherstellen
+            "flow_lph": flow_lph,
+            "flow_filtered": flow_filtered,
+            "thermal_kw": thermal_kw,
+
+            # Verbrauchs-Delta nur am Ende einer Brennphase
             "delta_liters": delta_liters,
             "delta_energy_kwh": delta_energy_kwh,
+
+            # Fehler
             "error_phc": error_phc,
             "error_absence": error_absence,
             "error_global": error_global,
         }
+
