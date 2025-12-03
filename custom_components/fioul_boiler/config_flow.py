@@ -3,8 +3,8 @@ from __future__ import annotations
 import voluptuous as vol
 
 from homeassistant import config_entries
-from homeassistant.const import CONF_NAME
 from homeassistant.core import callback
+from homeassistant.helpers import selector
 
 from .const import (
     DOMAIN,
@@ -29,7 +29,14 @@ class FioulBoilerConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         schema = vol.Schema(
             {
-                vol.Required(CONF_POWER_SENSOR): str,
+                vol.Required(CONF_POWER_SENSOR): selector.Selector(
+                    {
+                        "entity": {
+                            "domain": "sensor",
+                            "device_class": "power"
+                        }
+                    }
+                ),
                 vol.Optional(CONF_LPH_RUN, default=DEFAULT_LPH_RUN): vol.Coerce(float),
                 vol.Optional(CONF_DEBOUNCE, default=DEFAULT_DEBOUNCE): vol.Coerce(int),
                 vol.Optional(CONF_KWH_PER_LITER, default=DEFAULT_KWH_PER_LITER): vol.Coerce(float),
